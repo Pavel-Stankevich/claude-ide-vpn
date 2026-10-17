@@ -1,0 +1,25 @@
+# ── секреты и локальная конфигурация ──
+.env
+
+# ── wireguard: приватные ключи! ──
+wireguard/**/*.conf
+!wireguard/**/*.example.conf
+wireguard/wg0.conf
+wireguard/hooks/*
+!wireguard/hooks/*.example
+
+# ── данные пользователя IDE (токены claude, ssh-ключи и т.д.) ──
+ide-home/
+
+# ── сборочный мусор ──
+*.zip
+*.vsix
+__pycache__/
+*.pyc
+
+# ── редакторы и ОС ──
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

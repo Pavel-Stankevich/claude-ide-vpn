@@ -1,0 +1,14 @@
+# Пример конфига wireguard. Скопируйте в wireguard/wg0.conf и заполните своими ключами.
+# Имя файла может быть любым — укажите его в WG_CONF (полный путь внутри /config/wireguard).
+# ВАЖНО: уберите DNS= из [Interface] — DNS задаётся через DNS1/DNS2 в .env.
+# Fail-closed: без wg0 контейнер не имеет выхода в интернет вообще.
+
+[Interface]
+PrivateKey = <private-key-машины>
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = <public-key-сервера>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = vpn.example.com:51820
+PersistentKeepalive = 25

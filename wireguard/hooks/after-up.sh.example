@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Пример NET_HOOK для vpn-контейнера.
+# ВЫПОЛНЯЕТСЯ: как root, ПОСЛЕ поднятия туннеля и базовых правил fail-closed.
+# ДОСТУПНО: iptables, iproute2, wg, curl. Mount /config/wireguard смонтирован ro —
+# писать можно только в /run, /tmp.
+#
+# КАК ИСПОЛЬЗОВАТЬ:
+#   1) скопируйте этот файл:  cp after-up.sh.example after-up.sh
+#   2) сделайте исполняемым:  chmod +x wireguard/hooks/after-up.sh
+#   3) в .env:                NET_HOOK=/config/wireguard/hooks/after-up.sh
+#
+# ПРИМЕРЫ (раскомментируйте нужное):
+
+# Открыть SSH наружу к конкретному хосту (поверх туннеля — пойдёт через него):
+# iptables -A OUTPUT -d 203.0.113.10/32 -p tcp --dport 22 -j ACCEPT
+
+# Разрешить IPv6 через wireguard (fail-closed по умолчанию его режет):
+# ip6tables -A OUTPUT -o wg0 -j ACCEPT
+
+# Проверка, что туннель реально работает:
+# curl -fsS --max-time 10 ifconfig.me && echo " <- IP туннеля" >&2
+
+exit 0

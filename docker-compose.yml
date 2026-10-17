@@ -1,0 +1,49 @@
+# claude-ide-vpn — IDE + Claude Code за fail-closed VPN/proxy-sidecar
+# Имена образов: claude-ide-vpn / claude-ide / claude-ide-browser, тег — IMAGE_TAG (default: latest)
+name: claude-ide
+
+services:
+  # ── sidecar: владеет сетью. сюда же проброшен порт IDE ──
+  vpn:
+    build: ./vpn
+    image: claude-ide-vpn:${IMAGE_TAG:-latest}
+    container_name: claude-ide-vpn
+    ports:
+      - "${BIND:-127.0.0.1}:${PORT:-8080}:${PORT:-8080}"                        # IDE
+      - "${BROWSER_BIND:-127.0.0.1}:${BROWSER_PORT:-6080}:6080"                  # браузер (noVNC)
+    env_file: .env                    # PROXY_MODE/PROXY_URL/NET_HOOK/T2S_LOGLEVEL — отсюда
+    dns:                                # DNS идёт через туннель (default route -> tun)
+      - ${DNS1:-8.8.8.8}
+      - ${DNS2:-1.1.1.1}
+    volumes:
+      - ./wireguard:/config/wireguard:ro   # сюда кладёте *.conf wireguard (ищется автоматически) и hooks/
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    restart: unless-stopped
+
+  # ── браузер внутри netns: для OAuth-логинов и веба через туннель ──
+  # поднимается всегда вместе со стеком (порт см. BROWSER_PORT, по умолчанию 6080)
+  browser:
+    build: ./browser
+    image: claude-ide-browser:${IMAGE_TAG:-latest}
+    container_name: claude-ide-browser
+    network_mode: service:vpn        # тот же netns: трафик через туннель + общий localhost
+    env_file: .env
+    depends_on:
+      - vpn
+    restart: unless-stopped
+
+  # ── IDE: zero knowledge о прокси, живёт в netns vpn ──
+  ide:
+    build: ./ide
+    image: claude-ide:${IMAGE_TAG:-latest}
+    container_name: claude-ide
+    network_mode: service:vpn
+    env_file: .env
+    volumes:
+      - ${IDE_HOME:-./ide-home}:/root   # домашняя папка IDE — на диске хоста
+    depends_on:
+      - vpn
+    restart: unless-stopped
