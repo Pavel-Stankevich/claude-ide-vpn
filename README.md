@@ -100,6 +100,52 @@ localhost дойдёт до CLI сам, коды копировать не ну�
   (localhost доверенный), а доступ по `http://<LAN-IP>:6080` работать НЕ будет —
   для удалённого доступа используйте SSH-туннель/прокси на localhost или TLS.
 
+## Тулчейны: JDK, Maven, Gradle и прочее
+
+В образе предустановлен **SDKMAN**. Ставьте любые JDK (Temurin, Corretto,
+GraalVM…), Maven, Gradle, Kotlin, Scala двумя способами:
+
+1. Декларативно, через `.env` (применяется при старте контейнера,
+   идемпотентно):
+   ```bash
+   SDK_PKGS=java:21.0.5-tem,java:17.0.13-tem,maven:3.9.9
+   ```
+2. Вручную в терминале IDE:
+   ```
+   sdk list java
+   sdk install java 25-tem
+   sdk default java 21.0.5-tem
+   ```
+
+Первый `java` из `SDK_PKGS` становится дефолтным (`JAVA_HOME` для
+code-server и терминалов). Всё ставится в `~/.sdkman` → на диск хоста
+(`IDE_HOME`), переживает пересборку образа.
+
+Для не-JVM инструментов — любые apt-пакеты:
+```bash
+EXTRA_APT_PACKAGES=postgresql-client redis-tools
+```
+
+## Docker внутри IDE
+
+В стек встроен вложенный docker-демон (DinD): собирайте и запускайте
+контейнеры прямо из терминала IDE. Поднимается вместе со всеми сервисами.
+
+
+- В ide-образе — только **docker-cli**; демон живёт в сервисе `dind`
+  (privileged, образ `docker:27-dind`), его данные — в volume `docker-data`
+  (не раздувают `IDE_HOME`; очистка кэша: `docker compose down -v`).
+- `DOCKER_HOST` уже настроен: `docker build/run/pull` работают сразу.
+- **Трафик вложенных контейнеров идёт через туннель** (общий netns,
+  default route → tun0): `docker run curlimages/curl ifconfig.me` покажет
+  IP туннеля.
+- Порты вложенных контейнеров (`-p 8080:8080`) доступны внутри стека
+  (ide, контейнерный браузер) по `localhost:8080`; с хоста — только если
+  добавить маппинг порта в сервис vpn.
+- Отключить вложенный docker: закомментируйте сервис `dind` в
+  `docker-compose.yml` (команда `docker` в ide после этого не подключится —
+  это нормально).
+
 ## Режимы туннеля
 
 | `PROXY_MODE` | Поведение |
@@ -128,7 +174,11 @@ Wireguard: положите любой `*.conf` в `wireguard/` (имя не в�
 | `GIT_USER_NAME` / `GIT_USER_EMAIL` | ide | `git config --global` при старте |
 | `WORKSPACE` | ide | стартовая папка проекта |
 | `CS_ARGS` | ide | доп. флаги code-server (напр. `--cert`) |
-| `EXTRA_EXTENSIONS` | ide | расширения при первом старте, через запятую |
+| `IDE_EXTENSIONS` | ide | расширения при первом старте, через запятую |
+| `SDK_PKGS` | ide | тулчейны SDKMAN: `java:21.0.5-tem,maven:3.9.9` (версия опциональна) |
+| `CLAUDE_MARKETPLACES` | ide | маркетплейсы плагинов Claude Code: `owner/repo` (или полный URL) через запятую |
+| `CLAUDE_PLUGINS` | ide | плагины Claude Code: `имя@маркетплейс` через запятую (справа — короткое имя маркетплейса из `claude plugin marketplace list`) |
+| `EXTRA_APT_PACKAGES` | ide | apt-пакеты при старте: `postgresql-client redis-tools` |
 | `CLAUDE_EXTENSION_AUTOUPDATE` | ide | `1` (дефолт) = при старте: `claude update` (CLI всегда с npm, мгновенный паблиш) + расширение до самой свежей доступной на галерее версии |
 | `CLAUDE_EXTENSION_REFRESH` | ide | `1` = переустанавливать расширение всегда, без сравнения версий |
 | `PROXY_MODE` / `PROXY_URL` | vpn | см. таблицу режимов |

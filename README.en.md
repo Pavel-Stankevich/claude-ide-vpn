@@ -103,6 +103,51 @@ together with the stack.
   is fine (localhost is trusted), but `http://<LAN-IP>:6080` will NOT work —
   use an SSH tunnel/proxy to localhost or TLS for remote access.
 
+## Toolchains: JDK, Maven, Gradle and more
+
+**SDKMAN** is preinstalled. Install any JDK (Temurin, Corretto, GraalVM…),
+Maven, Gradle, Kotlin, Scala in two ways:
+
+1. Declaratively, via `.env` (applied on container start, idempotent):
+   ```bash
+   SDK_PKGS=java:21.0.5-tem,java:17.0.13-tem,maven:3.9.9
+   ```
+2. Manually in the IDE terminal:
+   ```
+   sdk list java
+   sdk install java 25-tem
+   sdk default java 21.0.5-tem
+   ```
+
+The first `java` in `SDK_PKGS` becomes the default (`JAVA_HOME` for
+code-server and terminals). Everything installs into `~/.sdkman` → on the
+host disk (`IDE_HOME`), survives rebuilds.
+
+For non-JVM tooling — any apt packages:
+```bash
+EXTRA_APT_PACKAGES=postgresql-client redis-tools
+```
+
+## Docker inside the IDE
+
+The stack includes a nested docker daemon (DinD): build and run containers
+right from the IDE terminal. It starts together with all other services.
+
+- The ide image contains only the **docker-cli**; the daemon lives in the
+  `dind` service (privileged, `docker:27-dind` image), its data is stored in
+  the `docker-data` volume (doesn't bloat `IDE_HOME`; purge cache with
+  `docker compose down -v`).
+- `DOCKER_HOST` is preconfigured: `docker build/run/pull` work out of the box.
+- **Nested containers' traffic goes through the tunnel** (shared netns,
+  default route → tun0): `docker run curlimages/curl ifconfig.me` shows the
+  tunnel IP.
+- Ports of nested containers (`-p 8080:8080`) are reachable inside the stack
+  (ide, in-container browser) at `localhost:8080`; from the host only if you
+  add a port mapping to the vpn service.
+- To disable nested docker, comment out the `dind` service in
+  `docker-compose.yml` (the `docker` command in ide will stop connecting —
+  that's expected).
+
 ## Tunnel modes
 
 | `PROXY_MODE` | Behavior |
@@ -131,7 +176,11 @@ is managed via compose `dns:`.
 | `GIT_USER_NAME` / `GIT_USER_EMAIL` | ide | `git config --global` on startup |
 | `WORKSPACE` | ide | starting project folder |
 | `CS_ARGS` | ide | extra code-server flags (e.g. `--cert`) |
-| `EXTRA_EXTENSIONS` | ide | extensions to install on first start, comma-separated |
+| `IDE_EXTENSIONS` | ide | extensions to install on first start, comma-separated |
+| `SDK_PKGS` | ide | SDKMAN toolchains: `java:21.0.5-tem,maven:3.9.9` (version optional) |
+| `CLAUDE_MARKETPLACES` | ide | Claude Code plugin marketplaces: `owner/repo` (or a full URL), comma-separated |
+| `CLAUDE_PLUGINS` | ide | Claude Code plugins: `name@marketplace`, comma-separated (marketplace part = the short name from `claude plugin marketplace list`) |
+| `EXTRA_APT_PACKAGES` | ide | apt packages on startup: `postgresql-client redis-tools` |
 | `CLAUDE_EXTENSION_AUTOUPDATE` | ide | `1` (default) = on startup: `claude update` (CLI always from npm, published instantly) + extension updated to the newest version available on the gallery |
 | `CLAUDE_EXTENSION_REFRESH` | ide | `1` = always reinstall the extension, skip version comparison |
 | `PROXY_MODE` / `PROXY_URL` | vpn | see tunnel modes table |

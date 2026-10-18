@@ -4,8 +4,10 @@
 # не поднят. В direct-режиме контейнер полностью изолирован (air-gapped).
 # Wireguard-конфиг ищется автоматически: первый *.conf в /config/wireguard.
 set -euo pipefail
+EP_VER="1.0"
 log(){ echo "[vpn] $*"; }
 die(){ log "ERROR: $*"; exit 1; }
+log "entrypoint v$EP_VER — если версия старая, файл не обновлён с диска/образа"
 
 # ── env-настройки ────────────────────────────────────────────
 PROXY_MODE="${PROXY_MODE:-auto}"         # auto | direct | proxy | wireguard

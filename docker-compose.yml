@@ -42,8 +42,30 @@ services:
     container_name: claude-ide
     network_mode: service:vpn
     env_file: .env
+    environment:
+      # вложенный docker: CLI в ide, демон в сервисе dind (всегда в стеке)
+      DOCKER_HOST: tcp://localhost:2375
     volumes:
       - ${IDE_HOME:-./ide-home}:/root   # домашняя папка IDE — на диске хоста
     depends_on:
       - vpn
     restart: unless-stopped
+
+  # ── вложенный docker: поднимается вместе со стеком ──
+  # Контейнеры, собранные здесь, ходят в интернет ЧЕРЕЗ ТУННЕЛЬ (общий netns).
+  dind:
+    image: docker:27-dind
+    container_name: claude-ide-dind
+    privileged: true                  # dockerd нужны права на сеть/монтирования
+    network_mode: service:vpn         # трафик вложенных контейнеров — в туннель
+    env_file: .env
+    environment:
+      DOCKER_TLS_CERTDIR: ""          # в пределах общего netns TLS не нужен
+    volumes:
+      - docker-data:/var/lib/docker   # образы/контейнеры — отдельно от IDE_HOME
+    depends_on:
+      - vpn
+    restart: unless-stopped
+
+volumes:
+  docker-data:

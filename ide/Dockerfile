@@ -1,12 +1,15 @@
 FROM ubuntu:24.04
 
+ARG TARGETARCH
+ARG DOCKER_CLI_VERSION=27.3.1
+
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
     LANG=C.UTF-8
 
 # IDE-контейнер: ничего не знает про прокси/VPN/iptables — только netns
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl wget git jq gnupg tar unzip \
+        ca-certificates curl wget git jq gnupg tar unzip zip \
         locales tzdata \
         nano htop \
         python3 python3-pip python3-venv build-essential \
@@ -27,6 +30,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          || echo "WARN: claude-code.vsix не скачался на этапе сборки — будет доустановлен при первом старте" ) \
     # Claude Code CLI (для терминала IDE)
     && npm install -g @anthropic-ai/claude-code \
+    # SDKMAN — менеджер JDK/Maven/Gradle/Kotlin/... Бутстрап в /opt: bind-mount
+    # перекрывает /root, поэтому в рантайме entrypoint копирует его в ~/.sdkman
+    && SDKMAN_DIR=/opt/sdkman bash -c 'curl -fsSL "https://get.sdkman.io" | bash' \
+    && sed -i 's/sdkman_selfupdate_enable=true/sdkman_selfupdate_enable=false/' /opt/sdkman/etc/config \
+    # docker-cli (без демона) — для вложенного docker, профиль `docker` в compose
+    && DOCKER_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64) \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz \
+    && tar xzf /tmp/docker.tgz -C /tmp \
+    && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+    && rm -rf /tmp/docker /tmp/docker.tgz \
     && rm -rf /tmp/claude-code.vsix /var/lib/apt/lists/*
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

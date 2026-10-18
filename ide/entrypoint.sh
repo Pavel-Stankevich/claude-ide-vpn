@@ -2,7 +2,9 @@
 # ═══ IDE: ничего не знает про прокси/VPN ═══
 # Живёт в network namespace контейнера vpn (network_mode: service:vpn).
 set -euo pipefail
+EP_VER="1.1-sdkman"
 log(){ echo "[ide] $*"; }
+log "entrypoint v$EP_VER — если версия старая, файл не обновлён с диска/образа"
 
 # ── env-настройки ────────────────────────────────────────────
 PORT="${PORT:-8080}"
@@ -10,7 +12,11 @@ AUTH="${AUTH:-password}"                 # password | none
 PASSWORD="${PASSWORD:-}"
 TZ="${TZ:-UTC}"
 WORKSPACE="${WORKSPACE:-/root/workspace}"   # стартовая папка проекта
-EXTRA_EXTENSIONS="${EXTRA_EXTENSIONS:-}"    # "publisher.ext1,publisher.ext2" (первый старт)
+IDE_EXTENSIONS="${IDE_EXTENSIONS:-${EXTRA_EXTENSIONS:-}}"   # расширения VS Code: "pub.ext1,pub.ext2" (первый старт; EXTRA_EXTENSIONS — устаревший алиас)
+SDK_PKGS="${SDK_PKGS:-}"                    # тулчейны SDKMAN: "java:21.0.5-tem,maven:3.9.9,gradle:8.10"
+CLAUDE_MARKETPLACES="${CLAUDE_MARKETPLACES:-}"       # маркетплейсы плагинов: "gh:owner/repo,..." через запятую
+CLAUDE_PLUGINS="${CLAUDE_PLUGINS:-}"                 # плагины Claude Code: "имя@маркетплейс,..." через запятую
+EXTRA_APT_PACKAGES="${EXTRA_APT_PACKAGES:-}" # любые apt-пакеты при старте: "postgresql-client redis-tools"
 CS_ARGS="${CS_ARGS:-}"                      # любые доп. флаги code-server
 GIT_USER_NAME="${GIT_USER_NAME:-}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-}"
@@ -146,19 +152,85 @@ update_claude_extension() {
     fi
 }
 
+# ── SDKMAN: бутстрап в ~/.sdkman (bind-mount перекрывает /root образа) ──
+ensure_sdkman() {
+    if [[ ! -d /root/.sdkman && -d /opt/sdkman ]]; then
+        log "ставлю SDKMAN в ~/.sdkman (из образа)"
+        cp -a /opt/sdkman /root/.sdkman
+    fi
+    touch /root/.bashrc 2>/dev/null || true
+    if [[ -d /root/.sdkman ]] && ! grep -q 'sdkman-init.sh' /root/.bashrc 2>/dev/null; then
+        echo 'source "$HOME/.sdkman/bin/sdkman-init.sh"' >> /root/.bashrc
+        log "добавил инициализацию SDKMAN в ~/.bashrc"
+    fi
+}
+
 # ── первая инициализация (домашняя папка пустая) ─────────────
 if [[ ! -f /root/.ide-initialized ]]; then
     log "первая инициализация: копирую предустановленные расширения..."
     mkdir -p /root/.local/share/code-server/extensions
     cp -rn /opt/default-ext/. /root/.local/share/code-server/extensions/ 2>/dev/null || true
-    if [[ -n "$EXTRA_EXTENSIONS" ]]; then
-        IFS=',' read -ra exts <<< "$EXTRA_EXTENSIONS"
+    if [[ -n "$IDE_EXTENSIONS" ]]; then
+        IFS=',' read -ra exts <<< "$IDE_EXTENSIONS"
         for e in "${exts[@]}"; do log "ставлю $e"; code-server --install-extension "$e" || true; done
     fi
+    ensure_sdkman
     touch /root/.ide-initialized
 fi
 
+# ── тулчейны: SDKMAN (JDK/Maven/Gradle/...) + доп. apt-пакеты ──
+setup_toolchains() {
+    if [[ -n "$EXTRA_APT_PACKAGES" ]]; then
+        log "ставлю apt-пакеты: $EXTRA_APT_PACKAGES"
+        apt-get update -qq \
+            && apt-get install -y --no-install-recommends $EXTRA_APT_PACKAGES \
+            || log "WARN: установка apt-пакетов не вышла"
+    fi
+    if [[ -n "$SDK_PKGS" ]]; then
+        ensure_sdkman
+    fi
+    if [[ -n "$SDK_PKGS" && -d /root/.sdkman ]]; then
+        # shellcheck disable=SC1091
+        # sdkman-init и сам sdk не объявляют часть переменных —
+        # под set -u падают; отключаем nounset на весь блок
+        set +u
+        source /root/.sdkman/bin/sdkman-init.sh
+        local item cand ver first_java=""
+        IFS=',' read -ra items <<< "$SDK_PKGS"
+        for item in "${items[@]}"; do
+            item="${item#"${item%%[![:space:]]*}"}"; item="${item%"${item##*[![:space:]]}"}"  # trim
+            [[ -z "$item" ]] && continue
+            cand="${item%%:*}"; ver="${item#*:}"
+            if [[ "$cand" == "$ver" ]]; then
+                log "sdk install $cand (последняя stable)"
+                yes | sdk install "$cand" || true
+                ver="$(ls /root/.sdkman/candidates/$cand 2>/dev/null | grep -v '^current$' | sort -V | tail -1 || true)"
+            else
+                log "sdk install $cand $ver"
+                yes | sdk install "$cand" "$ver" || true
+            fi
+            if [[ "$cand" == "java" && -z "$first_java" && -n "$ver" ]]; then
+                first_java="$ver"
+            fi
+        done
+        set -u
+        if [[ -n "$first_java" ]]; then
+            sdk default java "$first_java" || true
+            export JAVA_HOME="/root/.sdkman/candidates/java/$first_java"
+            export PATH="$JAVA_HOME/bin:$PATH"
+            log "JAVA_HOME=$JAVA_HOME"
+        fi
+    elif [[ -n "$SDK_PKGS" ]]; then
+        log "WARN: SDK_PKGS задан, но SDKMAN недоступен (в образе нет /opt/sdkman — пересоберите ide)"
+    fi
+}
+
 # ── держим CLI и расширение свежими при каждом старте ────────
+if [[ -n "$SDK_PKGS" || -n "$EXTRA_APT_PACKAGES" ]]; then
+    wait_for_net
+    setup_toolchains
+fi
+
 if [[ "$CLAUDE_EXTENSION_AUTOUPDATE" == "1" || "$CLAUDE_EXTENSION_REFRESH" == "1" || -z "$(installed_ext_version)" ]]; then
     # расширение ставим ВСЕГДА, если его нет (даже при AUTOUPDATE=0) —
     # иначе при сбое скачивания на сборке IDE осталась бы без расширения
@@ -167,8 +239,28 @@ if [[ "$CLAUDE_EXTENSION_AUTOUPDATE" == "1" || "$CLAUDE_EXTENSION_REFRESH" == "1
     log "обновляю Claude Code CLI (npm, через туннель)..."
     timeout 180 claude update >/dev/null 2>&1 || log "WARN: claude update не вышел (сеть/таймаут) — оставляю текущий CLI"
     update_claude_extension
+
+    # плагины Claude Code (декларативно; ставится в ~/.claude/plugins — IDE_HOME)
+    if [[ -n "$CLAUDE_MARKETPLACES" ]]; then
+        local_m="${CLAUDE_MARKETPLACES//[[:space:]]/}"
+        IFS=',' read -ra ms <<< "$local_m"
+        for m in "${ms[@]}"; do
+            [[ -z "$m" ]] && continue
+            claude plugin marketplace add "$m" >/dev/null 2>&1 \
+                || log "WARN: маркетплейс $m не добавлен (нужен вход в Claude?)"
+        done
+    fi
+    if [[ -n "$CLAUDE_PLUGINS" ]]; then
+        local_p="${CLAUDE_PLUGINS//[[:space:]]/}"
+        IFS=',' read -ra ps <<< "$local_p"
+        for plg in "${ps[@]}"; do
+            [[ -z "$plg" ]] && continue
+            claude plugin install "$plg" >/dev/null 2>&1 \
+                || log "WARN: плагин $plg не установлен (маркетплейс добавлен? вход в Claude?)"
+        done
+    fi
 fi
-log "версии: CLI $(claude --version 2>/dev/null | awk '{print $2}' || true) | расширение $(installed_ext_version)" || true
+log "версии: CLI $(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true) | расширение $(installed_ext_version | sed 's/-linux-.*//')" || true
 
 [[ "$AUTH" == "password" && -z "$PASSWORD" ]] && PASSWORD="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)"
 export PASSWORD
