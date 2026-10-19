@@ -11,6 +11,11 @@ wireguard/hooks/*
 # ── данные пользователя IDE (токены claude, ssh-ключи и т.д.) ──
 ide-home/
 
+# ── пользовательские скрипты установки (install.d) ──
+install.d/*.sh
+!install.d/*.example*
+!install.d/*.example.sh
+
 # ── сборочный мусор ──
 *.zip
 *.vsix

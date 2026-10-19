@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Chromium + виртуальный дисплей + VNC + noVNC (веб-клиент)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        chromium xvfb x11vnc websockify \
+        chromium xvfb x11vnc websockify openbox \
         fonts-liberation fonts-noto-color-emoji \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*

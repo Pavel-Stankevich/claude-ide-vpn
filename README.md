@@ -42,10 +42,14 @@ docker compose up -d --build
 # IDE: http://localhost:8080  (пароль в .env / docker logs claude-ide)
 ```
 
-Проверка маршрута:
+Проверка маршрута и отсутствия утечек:
 
 ```bash
-docker exec claude-ide-vpn curl -fsS ifconfig.me   # IP туннеля, не ваш
+.\check-vpn.ps1                      # Windows PowerShell
+# или:
+./check-vpn.sh                       # Linux / macOS
+# или вручную:
+docker exec claude-ide curl -fsS ifconfig.me   # IP туннеля, не ваш
 ```
 
 ## Вход в Claude
@@ -146,6 +150,21 @@ EXTRA_APT_PACKAGES=postgresql-client redis-tools
   `docker-compose.yml` (команда `docker` в ide после этого не подключится —
   это нормально).
 
+## Кастомные скрипты установки (`install.d/`)
+
+Любые установщики — не обязательно прописывать в `.env`. Кладите
+любой `.sh` в `install.d/` рядом с `docker-compose.yml` — он выполнится
+при старте ide (root, сеть через туннель), в алфавитном порядке. Рабочий пример уже
+лежит там: `install.d/terminal-browser.sh` (terminal-browser + плагин для Claude Code).
+
+- Пишите скрипты **идемпотентно** (официальные installer'ы обычно такие —
+  повторный прогон не ломает уже установленное).
+- Ставьте в `$HOME` (`~/.local/...`) — это `IDE_HOME`, переживает пересоздание,
+  и повторные старты проходят быстро.
+- Отключить все скрипты: `INSTALL_SCRIPTS=0` в `.env`.
+- apt-системные пакеты по-прежнему — через `EXTRA_APT_PACKAGES` (они живут
+  в образе и обновляются вместе с ним).
+
 ## Режимы туннеля
 
 | `PROXY_MODE` | Поведение |
@@ -203,7 +222,8 @@ Wireguard: положите любой `*.conf` в `wireguard/` (имя не в�
 ## Персистентность и безопасность
 
 - `IDE_HOME` — весь `/root` контейнера на хосте: настройки IDE, расширения,
-  `~/.claude`, `~/.claude.json`, ssh-ключи, git-config.
+  `~/.claude`, `~/.claude.json`, ssh-ключи, git-config, а также всё, что
+  скрипты из `install.d/` ставят в `$HOME` (см. ниже).
 - `wireguard/*.conf` содержат приватные ключи — в репозиторий не коммитятся
   (см. `.gitignore`).
 - noVNC по умолчанию слушает `127.0.0.1`; при `BROWSER_BIND=0.0.0.0` задайте `VNC_PASSWORD`.

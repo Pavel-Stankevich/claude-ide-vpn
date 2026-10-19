@@ -17,11 +17,15 @@ rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
 Xvfb :0 -screen 0 "${RESOLUTION}x24" &
 sleep 1
 
-# VNC-сервер. Буфер обмена — нативный: noVNC панель Clipboard (боковое меню)
-# в обе стороны. Автоматической синхронизации web-клипборд не даёт (ограничение
-# браузеров) — панель это штатный способ.
+# лёгкий оконный менеджер для корректного отображения диалогов, меню и фокуса
+DISPLAY=:0 openbox &
+
+# VNC-сервер: пароль передаём через файл auth, чтобы он не светился в ps aux
 if [[ -n "$VNC_PASSWORD" ]]; then
-    x11vnc -display :0 -forever -shared -rfbport 5900 -passwd "$VNC_PASSWORD" &
+    mkdir -p /tmp/.vnc
+    x11vnc -storepasswd "$VNC_PASSWORD" /tmp/.vnc/passwd
+    chmod 600 /tmp/.vnc/passwd
+    x11vnc -display :0 -forever -shared -rfbport 5900 -rfbauth /tmp/.vnc/passwd &
 else
     x11vnc -display :0 -forever -shared -rfbport 5900 -nopw &
 fi
@@ -29,14 +33,19 @@ fi
 # noVNC (веб-клиент поверх websockify)
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 
-# сам браузер. Без оконного менеджера --start-maximized не работает —
-# задаём окну явный размер дисплея и позицию 0,0 (адресная строка при этом сохраняется)
+# сам браузер: перезапускаем при закрытии вкладки или сбое без падения всего контейнера
 WIDTH="${RESOLUTION%x*}"; HEIGHT="${RESOLUTION#*x}"
-DISPLAY=:0 chromium \
-    --no-sandbox --disable-gpu --disable-dev-shm-usage \
-    --window-size="${WIDTH},${HEIGHT}" --window-position=0,0 \
-    --disable-session-crashed-bubble \
-    "$START_URL" &
+(
+    while true; do
+        DISPLAY=:0 chromium \
+            --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            --window-size="${WIDTH},${HEIGHT}" --window-position=0,0 \
+            --disable-session-crashed-bubble \
+            --remote-debugging-port=9222 \
+            "$START_URL" || true
+        sleep 1
+    done
+) &
 
 echo "[browser] noVNC: http://localhost:${BROWSER_PORT:-6080}/vnc.html  (или через IDE: /proxy/6080/vnc.html)"
 wait -n

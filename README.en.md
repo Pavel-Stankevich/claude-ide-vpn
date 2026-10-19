@@ -42,10 +42,14 @@ docker compose up -d --build
 # IDE: http://localhost:8080  (password in .env / docker logs claude-ide)
 ```
 
-Verify the route:
+Verify the route and leak protection:
 
 ```bash
-docker exec claude-ide-vpn curl -fsS ifconfig.me   # tunnel IP, not yours
+.\check-vpn.ps1                      # Windows PowerShell
+# or:
+./check-vpn.sh                       # Linux / macOS
+# or manually:
+docker exec claude-ide curl -fsS ifconfig.me   # tunnel IP, not yours
 ```
 
 ## Signing in to Claude
@@ -148,6 +152,21 @@ right from the IDE terminal. It starts together with all other services.
   `docker-compose.yml` (the `docker` command in ide will stop connecting —
   that's expected).
 
+## Custom install scripts (`install.d/`)
+
+Any installers — no need to stuff everything into `.env`. Drop any
+`.sh` into `install.d/` next to `docker-compose.yml` — it runs on ide startup
+(as root, network through the tunnel), in alphabetical order. A working example
+ships at `install.d/terminal-browser.sh` (terminal-browser + Claude Code plugin).
+
+- Write scripts **idempotently** (official installers usually are — a re-run
+  shouldn't break what's already installed).
+- Install into `$HOME` (`~/.local/...`) — that's `IDE_HOME`, it survives
+  recreation, and subsequent startups pass quickly.
+- Disable all scripts: `INSTALL_SCRIPTS=0` in `.env`.
+- System-level apt packages still go through `EXTRA_APT_PACKAGES` (they live
+  in the image and update with it).
+
 ## Tunnel modes
 
 | `PROXY_MODE` | Behavior |
@@ -205,7 +224,8 @@ is managed via compose `dns:`.
 ## Persistence & security
 
 - `IDE_HOME` — the container's whole `/root` on the host: IDE settings,
-  extensions, `~/.claude`, `~/.claude.json`, ssh keys, git config.
+  extensions, `~/.claude`, `~/.claude.json`, ssh keys, git config, plus
+  everything `install.d/` scripts install into `$HOME` (see below).
 - `wireguard/*.conf` contains private keys — never committed (see `.gitignore`).
 - noVNC listens on `127.0.0.1` by default; set `VNC_PASSWORD` when using
   `BROWSER_BIND=0.0.0.0`.

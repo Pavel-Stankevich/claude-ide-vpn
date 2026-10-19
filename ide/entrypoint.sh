@@ -17,6 +17,7 @@ SDK_PKGS="${SDK_PKGS:-}"                    # тулчейны SDKMAN: "java:21.
 CLAUDE_MARKETPLACES="${CLAUDE_MARKETPLACES:-}"       # маркетплейсы плагинов: "gh:owner/repo,..." через запятую
 CLAUDE_PLUGINS="${CLAUDE_PLUGINS:-}"                 # плагины Claude Code: "имя@маркетплейс,..." через запятую
 EXTRA_APT_PACKAGES="${EXTRA_APT_PACKAGES:-}" # любые apt-пакеты при старте: "postgresql-client redis-tools"
+INSTALL_SCRIPTS="${INSTALL_SCRIPTS:-1}"             # 0 = не выполнять скрипты из install.d/
 CS_ARGS="${CS_ARGS:-}"                      # любые доп. флаги code-server
 GIT_USER_NAME="${GIT_USER_NAME:-}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-}"
@@ -52,10 +53,11 @@ mkdir -p "$WORKSPACE"
 # ide стартует сразу после vpn (depends_on), но туннель поднимается секунды:
 # fail-closed уже режет трафик, а маршрутов ещё нет.
 wait_for_net() {
+    [[ "${PROXY_MODE:-auto}" == "direct" ]] && return 0
     local i
     for i in $(seq 1 45); do
-        # marketplace отдаёт curl 403 (бот-детект) — важен сам факт связности
-        if curl -4 -s -o /dev/null --connect-timeout 3 --max-time 6 https://marketplace.visualstudio.com 2>/dev/null; then
+        if curl -4 -fsS -o /dev/null --connect-timeout 2 --max-time 4 https://1.1.1.1/cdn-cgi/trace 2>/dev/null || \
+           curl -4 -s -o /dev/null --connect-timeout 2 --max-time 4 https://marketplace.visualstudio.com 2>/dev/null; then
             log "сеть через туннель доступна"
             return 0
         fi
@@ -75,7 +77,15 @@ CC_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ch
 CC_VSIX=/tmp/claude-code.vsix
 
 installed_ext_version() {
-    ls -d /root/.local/share/code-server/extensions/anthropic.claude-code-* 2>/dev/null | sed 's/.*claude-code-//' | head -1 || true
+    local ext_dir="/root/.local/share/code-server/extensions"
+    [[ -d "$ext_dir" ]] || return 0
+    if [[ -f "$ext_dir/.obsolete" ]]; then
+        for obs in $(jq -r 'keys[]' "$ext_dir/.obsolete" 2>/dev/null || true); do
+            [[ -n "$obs" && -d "$ext_dir/$obs" ]] && rm -rf "$ext_dir/$obs"
+        done
+        rm -f "$ext_dir/.obsolete" 2>/dev/null || true
+    fi
+    ls -d "$ext_dir"/anthropic.claude-code-* 2>/dev/null | sed 's/.*claude-code-//' | sort -V | tail -1 || true
 }
 
 # список версий из gallery API (свежие сверху)
@@ -144,7 +154,7 @@ update_claude_extension() {
     wait_for_net || return 0
     log "обновляю расширение Claude Code (штатная галерея)..."
     if code-server --install-extension anthropic.claude-code --force; then
-        log "расширение Claude Code: $(installed_ext_version)"
+        log "расширение Claude Code: $(installed_ext_version | sed 's/-linux-.*//')"
     else
         log "галерея code-server недоступна — пробую MS Marketplace напрямую..."
         install_from_vsix_fallback \
@@ -225,52 +235,74 @@ setup_toolchains() {
     fi
 }
 
+# ── кастомные скрипты установки: /opt/install.d (смонтировано с хоста) ──
+# Каждый исполняемый *.sh выполняется при старте (root, сеть через туннель).
+# Идемпотентность — на совести скрипта. Ставьте в $HOME — это IDE_HOME.
+run_install_scripts() {
+    [[ "${INSTALL_SCRIPTS:-1}" == "1" ]] || return 0
+    local dir=/opt/install.d s
+    [[ -d "$dir" ]] || return 0
+    for s in "$dir"/*.sh; do
+        [[ -f "$s" ]] || continue
+        log "install-script: $(basename "$s")"
+        bash "$s" || log "WARN: $(basename "$s") завершился с ошибкой — см. вывод выше"
+    done
+}
+
 # ── держим CLI и расширение свежими при каждом старте ────────
-if [[ -n "$SDK_PKGS" || -n "$EXTRA_APT_PACKAGES" ]]; then
+if [[ -n "$SDK_PKGS" || -n "$EXTRA_APT_PACKAGES" || "${INSTALL_SCRIPTS:-1}" == "1" ]]; then
     wait_for_net
     setup_toolchains
+    run_install_scripts
 fi
-
-if [[ "$CLAUDE_EXTENSION_AUTOUPDATE" == "1" || "$CLAUDE_EXTENSION_REFRESH" == "1" || -z "$(installed_ext_version)" ]]; then
-    # расширение ставим ВСЕГДА, если его нет (даже при AUTOUPDATE=0) —
-    # иначе при сбое скачивания на сборке IDE осталась бы без расширения
-    # CLI: npm-паблиш мгновенен — это всегда самая свежая версия (тот же
-    # "claude update", что вручную). Расширение догонит CLI в окно раскатки.
-    log "обновляю Claude Code CLI (npm, через туннель)..."
-    timeout 180 claude update >/dev/null 2>&1 || log "WARN: claude update не вышел (сеть/таймаут) — оставляю текущий CLI"
-    update_claude_extension
-
-    # плагины Claude Code (декларативно; ставится в ~/.claude/plugins — IDE_HOME)
-    if [[ -n "$CLAUDE_MARKETPLACES" ]]; then
-        local_m="${CLAUDE_MARKETPLACES//[[:space:]]/}"
-        IFS=',' read -ra ms <<< "$local_m"
-        for m in "${ms[@]}"; do
-            [[ -z "$m" ]] && continue
-            claude plugin marketplace add "$m" >/dev/null 2>&1 \
-                || log "WARN: маркетплейс $m не добавлен (нужен вход в Claude?)"
-        done
-    fi
-    if [[ -n "$CLAUDE_PLUGINS" ]]; then
-        local_p="${CLAUDE_PLUGINS//[[:space:]]/}"
-        IFS=',' read -ra ps <<< "$local_p"
-        for plg in "${ps[@]}"; do
-            [[ -z "$plg" ]] && continue
-            claude plugin install "$plg" >/dev/null 2>&1 \
-                || log "WARN: плагин $plg не установлен (маркетплейс добавлен? вход в Claude?)"
-        done
-    fi
-fi
-log "версии: CLI $(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true) | расширение $(installed_ext_version | sed 's/-linux-.*//')" || true
 
 [[ "$AUTH" == "password" && -z "$PASSWORD" ]] && PASSWORD="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)"
 export PASSWORD
+if [[ -n "$PASSWORD" ]]; then
+    mkdir -p /root/.config/code-server
+    echo "$PASSWORD" > /root/.config/code-server/password
+    chmod 600 /root/.config/code-server/password 2>/dev/null || true
+fi
 log "code-server: http://localhost:$PORT (auth=$AUTH, workspace=$WORKSPACE)"
-[[ -n "$PASSWORD" ]] && log "пароль: $PASSWORD"
+[[ -n "$PASSWORD" ]] && log "пароль: $PASSWORD (сохранён в ~/.config/code-server/password)"
 
 # shellcheck disable=SC2086
 code-server --bind-addr "0.0.0.0:$PORT" --auth "$AUTH" --disable-telemetry ${CS_ARGS:-} "$WORKSPACE" &
 CS_PID=$!
 trap 'kill -TERM $CS_PID 2>/dev/null; exit 0' TERM INT
+
+if [[ "$CLAUDE_EXTENSION_AUTOUPDATE" == "1" || "$CLAUDE_EXTENSION_REFRESH" == "1" || -z "$(installed_ext_version)" ]]; then
+    (
+        if ! command -v claude >/dev/null 2>&1; then
+            log "устанавливаю Claude Code CLI через туннель..."
+            npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || log "WARN: npm install claude-code не вышел"
+        else
+            timeout 300 claude update >/dev/null 2>&1 || log "WARN: claude update не вышел (сеть/таймаут) — оставляю текущий CLI"
+        fi
+        update_claude_extension
+
+        if [[ -n "$CLAUDE_MARKETPLACES" ]]; then
+            local_m="${CLAUDE_MARKETPLACES//[[:space:]]/}"
+            IFS=',' read -ra ms <<< "$local_m"
+            for m in "${ms[@]}"; do
+                [[ -z "$m" ]] && continue
+                claude plugin marketplace add "$m" >/dev/null 2>&1 \
+                    || log "WARN: маркетплейс $m не добавлен (нужен вход в Claude?)"
+            done
+        fi
+        if [[ -n "$CLAUDE_PLUGINS" ]]; then
+            local_p="${CLAUDE_PLUGINS//[[:space:]]/}"
+            IFS=',' read -ra ps <<< "$local_p"
+            for plg in "${ps[@]}"; do
+                [[ -z "$plg" ]] && continue
+                claude plugin install "$plg" >/dev/null 2>&1 \
+                    || log "WARN: плагин $plg не установлен (маркетплейс добавлен? вход в Claude?)"
+            done
+        fi
+
+        log "версии: CLI $(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true) | расширение $(installed_ext_version | sed 's/-linux-.*//')" || true
+    ) &
+fi
 
 # ── watchdog: netns принадлежит vpn-контейнеру ───────────────
 while true; do

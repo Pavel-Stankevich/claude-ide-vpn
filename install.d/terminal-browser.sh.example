@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Пример кастомного скрипта установки.
+#
+# КАК ВКЛЮЧИТЬ:
+#   cp terminal-browser.sh.example terminal-browser.sh
+#   chmod +x terminal-browser.sh          (на хосте; под Windows: git update-index --chmod=+x)
+#
+# ПРАВИЛА:
+#   - выполняется ПРИ КАЖДОМ старте ide, от root, сеть через туннель;
+#   - пишите идемпотентно (официальные installer'ы обычно такие — повторный
+#     прогон не должен всё ломать);
+#   - ставьте в $HOME (~/.local/...) — это IDE_HOME, переживает пересоздание,
+#     и повторная установка при старте пройдёт быстро/мгновенно;
+#   - все скрипты кладите сюда, выполняются по алфавиту;
+#   - отключить все: INSTALL_SCRIPTS=0 в .env
+set -e
+curl -fsSL https://terminal-browser.sh/install | bash

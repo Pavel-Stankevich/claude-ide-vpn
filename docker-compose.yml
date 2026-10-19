@@ -31,6 +31,8 @@ services:
     container_name: claude-ide-browser
     network_mode: service:vpn        # тот же netns: трафик через туннель + общий localhost
     env_file: .env
+    volumes:
+      - ${IDE_HOME:-./ide-home}/.browser-profile:/root/.config/chromium
     depends_on:
       - vpn
     restart: unless-stopped
@@ -47,6 +49,7 @@ services:
       DOCKER_HOST: tcp://localhost:2375
     volumes:
       - ${IDE_HOME:-./ide-home}:/root   # домашняя папка IDE — на диске хоста
+      - ./install.d:/opt/install.d:ro   # кастомные скрипты установки (см. install.d/)
     depends_on:
       - vpn
     restart: unless-stopped
@@ -63,6 +66,7 @@ services:
       DOCKER_TLS_CERTDIR: ""          # в пределах общего netns TLS не нужен
     volumes:
       - docker-data:/var/lib/docker   # образы/контейнеры — отдельно от IDE_HOME
+      - ${IDE_HOME:-./ide-home}:/root # доступ к файлам проектов для bind-mount'ов (docker run -v)
     depends_on:
       - vpn
     restart: unless-stopped

@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# code-server живёт в этом же netns — healthcheck проверяет его
+# Проверка реальной доступности интернета через туннель (в direct-режиме — no-op)
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -fsS http://localhost:${PORT:-8080}/healthz || exit 1
+    CMD curl -fsS --max-time 3 https://1.1.1.1 >/dev/null 2>&1 || [ "${PROXY_MODE:-auto}" = "direct" ] || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

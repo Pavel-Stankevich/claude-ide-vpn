@@ -23,6 +23,9 @@ log "fail-closed: весь исходящий трафик заблокиров�
 iptables -P OUTPUT DROP
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# TCPMSS clamping: предотвращает застревание TLS/HTTPS на туннелях с меньшим MTU (1420)
+iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 if command -v ip6tables >/dev/null 2>&1; then
     ip6tables -P OUTPUT DROP 2>/dev/null || true
     ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
@@ -62,8 +65,14 @@ start_wireguard() {
     log "wireguard: использую $conf"
     # endpoint из конфига: разрешаем ДО wg-quick up (handshake идёт сразу)
     local eph eip
-    eph="$(awk -F'=' '/^[[:space:]]*Endpoint[[:space:]]*=/{v=$2; gsub(/[[:space:]]/,"",v); print v; exit}' "$conf" | cut -d: -f1)"
+    eph="$(awk -F'=' '/^[[:space:]]*Endpoint[[:space:]]*=/{v=$2; gsub(/[[:space:]]/,"",v); print v; exit}' "$conf")"
     if [[ -n "$eph" ]]; then
+        # Корректно отсекаем порт: [2001:db8::1]:51820 -> 2001:db8::1, host:port -> host
+        if [[ "$eph" =~ ^\[([a-fA-F0-9:]+)\](:[0-9]+)?$ ]]; then
+            eph="${BASH_REMATCH[1]}"
+        else
+            eph="${eph%:*}"
+        fi
         allow_dns
         eip="$(getent ahostsv4 "$eph" 2>/dev/null | awk 'NR==1{print $1}' || true)"
         [[ -z "$eip" ]] && die "wg endpoint не резолвится: $eph"
@@ -74,6 +83,8 @@ start_wireguard() {
     fi
     install -m 600 "$conf" /run/wg0.conf          # имя файла = имя интерфейса
     wg-quick up /run/wg0.conf
+    # Безопасный MTU (1280) предотвращает дроп крупных пакетов (Claude API requests) провайдерами
+    ip link set dev wg0 mtu "${WG_MTU:-1280}" 2>/dev/null || true
     allow_iface wg0
     IFACE=wg0
 }
@@ -92,6 +103,11 @@ start_tun2socks() {
     local orig_gw; orig_gw="$(ip route show default 2>/dev/null | awk '{print $3; exit}' || true)"
     [[ -n "$orig_gw" ]] || die "default gateway не найден"
     iptables -A OUTPUT -d "$up_ip/32" -j ACCEPT      # tun2socks -> прокси (напрямую)
+
+    # Локальные DNS-резолверы направляем через шлюз по умолчанию в обход tun0
+    for ns in $(awk '$1=="nameserver"{print $2}' /etc/resolv.conf | grep -v ':' || true); do
+        ip route replace "$ns/32" via "$orig_gw" 2>/dev/null || true
+    done
 
     local creds=""; [[ -n "$user" ]] && { creds="$user"; [[ -n "$pass" ]] && creds+=":$pass"; creds+="@"; }
 
@@ -138,10 +154,35 @@ if [[ -n "$T2S_PID" ]]; then
     wait "$T2S_PID" || true
     log "tun2socks упал — рестарт контейнера (docker restart)"; exit 1
 elif [[ -n "$IFACE" ]]; then
-    while ip link show "$IFACE" >/dev/null 2>&1; do
-        sleep 5 & wait $!
+    log "мониторинг туннеля $IFACE..."
+    fails=0
+    while true; do
+        sleep 15 & wait $!
+        # 1. Проверяем наличие интерфейса
+        if ! ip link show "$IFACE" >/dev/null 2>&1; then
+            log "интерфейс $IFACE исчез — рестарт контейнера (docker restart)"; exit 1
+        fi
+        # 2. Для WireGuard проверяем реальный handshake и связность
+        if [[ "$IFACE" == "wg0" ]]; then
+            last_hs="$(wg show wg0 latest-handshakes 2>/dev/null | awk '{print $2; exit}' || echo 0)"
+            now="$(date +%s)"
+            diff=$((now - ${last_hs:-0}))
+            # Рукопожатие WireGuard обычно раз в ~120с. Если нет > 180с, тестируем связность
+            if [[ "$last_hs" -gt 0 && "$diff" -gt 180 ]]; then
+                if ! curl -fsS --max-time 4 https://1.1.1.1 >/dev/null 2>&1; then
+                    fails=$((fails + 1))
+                    log "WARN: нет связи через wireguard ($fails/3, handshake ${diff}s назад)..."
+                    if [[ "$fails" -ge 3 ]]; then
+                        log "wireguard туннель заглох — рестарт контейнера (docker restart)"; exit 1
+                    fi
+                else
+                    fails=0
+                fi
+            else
+                fails=0
+            fi
+        fi
     done
-    log "интерфейс $IFACE исчез — рестарт контейнера (docker restart)"; exit 1
 else
     log "direct: держу netns (изолированный)"
     while true; do sleep 3600 & wait $!; done
